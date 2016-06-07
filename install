@@ -1,0 +1,4 @@
+#!/bin/bash
+
+virtualenv --python=python3 venv
+./venv/bin/pip install -r requirements.pip

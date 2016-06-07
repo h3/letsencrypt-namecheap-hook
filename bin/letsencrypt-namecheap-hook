@@ -1,0 +1,172 @@
+#!/usr/bin/env python
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
+from builtins import str
+
+from future import standard_library
+standard_library.install_aliases()
+
+import dns.exception
+import dns.resolver
+import logging
+import os
+import requests
+import sys
+import time
+
+from tld import get_tld
+from namecheap.api import Api, ApiError
+
+# Enable verified HTTPS requests on older Pythons
+# http://urllib3.readthedocs.org/en/latest/security.html
+if sys.version_info[0] == 2:
+    requests.packages.urllib3.contrib.pyopenssl.inject_into_urllib3()
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler())
+logger.setLevel(logging.INFO)
+
+try:
+    api = Api(
+	os.environ['NC_API_USER'],
+	os.environ['NC_API_KEY'],
+	os.environ['NC_USERNAME'],
+	os.environ['NC_CLIENT_IP'],
+	sandbox=False,
+        debug=False)
+except KeyError:
+    logger.error(" + Unable to locate NameCheap credentials in environment!")
+    sys.exit(1)
+
+try:
+    dns_servers = os.environ['NC_NAMESERVERS']
+    dns_servers = dns_servers.split(' ')
+    logger.info(" + Using name servers: {0}".format(os.environ['NC_NAMESERVERS']))
+except KeyError:
+    dns_servers = False
+    logger.warning(" ! Name servers not found in environment!")
+
+def _has_dns_propagated(challenge, token):
+    txt_records = []
+    try:
+        if dns_servers:
+            custom_resolver = dns.resolver.Resolver()
+            custom_resolver.nameservers = dns_servers
+            dns_response = custom_resolver.query(challenge, 'TXT')
+        else:
+            dns_response = dns.resolver.query(challenge, 'TXT')
+        for rdata in dns_response:
+            for txt_record in rdata.strings:
+                txt_records.append(txt_record)
+    except dns.exception.DNSException as error:
+        return False
+
+    for txt_record in txt_records:
+        if txt_record == token:
+            return True
+
+    return False
+
+
+def create_txt_record(args):
+    domain, token = args[0], args[2]
+    tld = get_tld('http://' + domain)
+    challenge = "{0}.{1}".format('_acme-challenge', domain)
+
+    try:
+        old_records = api.domains_dns_getHosts(tld)
+    except ApiError as e:
+        logger.error("! Could not retrieve records list: {0}".format(e))
+        sys.exit(1)
+
+    new_records = [{
+        'HostName' : challenge,
+        'RecordType' : 'TXT',
+        'Address' : token,
+        'MXPref' : '10',
+        'TTL' : '60'
+    }]
+
+    for record in old_records:
+        new_records.append({
+            'HostName': record.get('Name'),
+            'RecordType': record.get('Type'),
+            'MXPref': record.get('MXPref'),
+            'TTL': record.get('TTL'),
+            'Address': record.get('Address'),
+        })
+
+    try:
+        api.domains_dns_setHosts(tld, new_records)
+        logger.info(" + TXT record created: {0}".format(challenge))
+    except ApiError as e:
+        logger.error("! Could not create TXT record: {0}".format(e))
+        sys.exit(1)
+
+    # give it 10 seconds to settle down and avoid nxdomain caching
+    logger.info(" + Settling down for 10s...")
+    time.sleep(10)
+
+    while(_has_dns_propagated(challenge, token) == False):
+        logger.info(" + DNS not propagated, waiting 30s...")
+        time.sleep(30)
+
+
+def delete_txt_record(args):
+    domain, token = args[0], args[2]
+    if not domain:
+        logger.info(" + http_request() error in letsencrypt.sh?")
+        return
+    tld = get_tld('http://' + domain)
+    challenge = "{0}.{1}".format('_acme-challenge', domain)
+
+    try:
+        old_records = api.domains_dns_getHosts(tld)
+    except ApiError as e:
+        logger.error("! Could not retrieve records list: {0}".format(e))
+        sys.exit(1)
+
+    new_records = []
+    for record in old_records:
+        if record.get('Name') != challenge:
+            new_records.append({
+                'HostName': record.get('Name'),
+                'RecordType': record.get('Type'),
+                'MXPref': record.get('MXPref'),
+                'TTL': record.get('TTL'),
+                'Address': record.get('Address'),
+            })
+
+    try:
+        api.domains_dns_setHosts(tld, new_records)
+        logger.debug(" + Deleted TXT record name: {0}".format(challenge))
+    except ApiError as e:
+        logger.error("! Could not delete TXT record: {0}".format(e))
+        sys.exit(1)
+
+
+def deploy_cert(args):
+    domain, privkey_pem, cert_pem, fullchain_pem, chain_pem, timestamp = args
+    logger.info(' + ssl_certificate: {0}'.format(fullchain_pem))
+    logger.info(' + ssl_certificate_key: {0}'.format(privkey_pem))
+    return
+
+def unchanged_cert(args):
+    return
+
+def main(argv):
+    ops = {
+        'deploy_challenge': create_txt_record,
+        'clean_challenge' : delete_txt_record,
+        'deploy_cert'     : deploy_cert,
+        'unchanged_cert'  : unchanged_cert,
+    }
+    logger.info(" + NameCheap hook executing: {0}".format(argv[0]))
+    ops[argv[0]](argv[1:])
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
