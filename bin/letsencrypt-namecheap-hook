@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler())
 logger.setLevel(logging.INFO)
 
+DEBUG = os.environ.get('NC_DEBUG', False) == 'TRUE'
+
 try:
     api = Api(
 	os.environ['NC_API_USER'],
@@ -36,7 +38,12 @@ try:
 	os.environ['NC_USERNAME'],
 	os.environ['NC_CLIENT_IP'],
 	sandbox=False,
-        debug=False)
+        debug=DEBUG)
+    if DEBUG:
+        logger.info(" + Using NC_API_USER: {0}".format(os.environ['NC_API_USER']))
+        logger.info(" + Using NC_API_KEY: {0}".format(os.environ['NC_API_KEY']))
+        logger.info(" + Using NC_USERNAME: {0}".format(os.environ['NC_USERNAME']))
+        logger.info(" + Using NC_CLIENT_IP: {0}".format(os.environ['NC_CLIENT_IP']))
 except KeyError:
     logger.error(" + Unable to locate NameCheap credentials in environment!")
     sys.exit(1)
@@ -49,15 +56,16 @@ except KeyError:
     dns_servers = False
     logger.warning(" ! Name servers not found in environment!")
 
-def _has_dns_propagated(challenge, token):
+def _has_dns_propagated(fullname, token):
+    logger.info(" + Checking TXT record for: {0} ({1})".format(fullname, token))
     txt_records = []
     try:
         if dns_servers:
             custom_resolver = dns.resolver.Resolver()
             custom_resolver.nameservers = dns_servers
-            dns_response = custom_resolver.query(challenge, 'TXT')
+            dns_response = custom_resolver.query(fullname, 'TXT')
         else:
-            dns_response = dns.resolver.query(challenge, 'TXT')
+            dns_response = dns.resolver.query(fullname, 'TXT')
         for rdata in dns_response:
             for txt_record in rdata.strings:
                 txt_records.append(txt_record)
@@ -74,7 +82,13 @@ def _has_dns_propagated(challenge, token):
 def create_txt_record(args):
     domain, token = args[0], args[2]
     tld = get_tld('http://' + domain)
-    challenge = "{0}.{1}".format('_acme-challenge', domain)
+    if domain != tld: # subdomain
+        subdomain = domain.replace('.{0}'.format(tld), '')
+        hostname = '_acme-challenge.{0}'.format(subdomain)
+        fullname = '_acme-challenge.{0}'.format(domain)
+    else:
+        hostname = '_acme-challenge'
+        fullname = '_acme-challenge.{0}'.format(domain)
 
     try:
         old_records = api.domains_dns_getHosts(tld)
@@ -83,7 +97,7 @@ def create_txt_record(args):
         sys.exit(1)
 
     new_records = [{
-        'HostName' : challenge,
+        'HostName' : hostname,
         'RecordType' : 'TXT',
         'Address' : token,
         'MXPref' : '10',
@@ -101,16 +115,16 @@ def create_txt_record(args):
 
     try:
         api.domains_dns_setHosts(tld, new_records)
-        logger.info(" + TXT record created: {0}".format(challenge))
+        logger.info(" + TXT record created: {0} ({1})".format(fullname, token))
     except ApiError as e:
         logger.error("! Could not create TXT record: {0}".format(e))
         sys.exit(1)
 
     # give it 10 seconds to settle down and avoid nxdomain caching
-    logger.info(" + Settling down for 10s...")
-    time.sleep(10)
+    logger.info(" + Settling down for 60s...")
+    time.sleep(60)
 
-    while(_has_dns_propagated(challenge, token) == False):
+    while(_has_dns_propagated(fullname, token) == False):
         logger.info(" + DNS not propagated, waiting 30s...")
         time.sleep(30)
 
@@ -121,7 +135,13 @@ def delete_txt_record(args):
         logger.info(" + http_request() error in letsencrypt.sh?")
         return
     tld = get_tld('http://' + domain)
-    challenge = "{0}.{1}".format('_acme-challenge', domain)
+    if domain != tld: # subdomain
+        subdomain = domain.replace('.{0}'.format(tld), '')
+        hostname = '_acme-challenge.{0}'.format(subdomain)
+        fullname = '_acme-challenge.{0}'.format(domain)
+    else:
+        hostname = '_acme-challenge'
+        fullname = '_acme-challenge.{0}'.format(domain)
 
     try:
         old_records = api.domains_dns_getHosts(tld)
@@ -131,7 +151,7 @@ def delete_txt_record(args):
 
     new_records = []
     for record in old_records:
-        if record.get('Name') != challenge:
+        if record.get('Name') != hostname:
             new_records.append({
                 'HostName': record.get('Name'),
                 'RecordType': record.get('Type'),
@@ -142,7 +162,7 @@ def delete_txt_record(args):
 
     try:
         api.domains_dns_setHosts(tld, new_records)
-        logger.debug(" + Deleted TXT record name: {0}".format(challenge))
+        logger.info(" + Deleted TXT record name: {0}".format(fullname))
     except ApiError as e:
         logger.error("! Could not delete TXT record: {0}".format(e))
         sys.exit(1)
