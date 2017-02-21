@@ -1,3 +1,9 @@
+# /!\ ATTENTION: Letsencrypt.sh is now deprecated, it was replaced by dehydrated:
+
+https://github.com/lukas2511/dehydrated
+
+**This project is not compatible with dehydrated, it is therefor deprecated too.**
+
 # NameCheap hook for `letsencrypt.sh`
 
 This a hook for [letsencrypt.sh](https://github.com/lukas2511/letsencrypt.sh) (a [Let's Encrypt](https://letsencrypt.org/) ACME client) that allows you to use [NameCheap](https://www.namecheap.com/) DNS records to respond to `dns-01` challenges. Requires Python and your NameCheap account and API key being in the environment.
